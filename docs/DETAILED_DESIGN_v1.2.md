@@ -7,12 +7,13 @@
 | 项 | 内容 |
 | :--- | :--- |
 | 项目名称 | AIOps-Bastion：基于 MCP 与 RAG 的多节点智能运维堡垒机 |
-| 文档版本 | 1.2（Detailed Design — 评审定稿版） |
+| 文档版本 | 1.3（Detailed Design — spike 验证后修订版） |
 | 设计日期 | 2026-07-04 |
+| 修订日期 | 2026-07-07（据 spike 验证结果修订） |
 | 评审日期 | 2026-07-04 |
 | 设计依据 | AIOps-Bastion 需求分析与架构设计说明书 (PRD) v1.0 |
 | 作者 | SRE + 全栈架构师 |
-| 状态 | Approved（6 项待确认事项已全部确认定稿） |
+| 状态 | Approved（6 项决策已定稿 + 7 项 spike 修订已落地） |
 
 **修订记录**
 
@@ -21,6 +22,7 @@
 | 1.0 | 2026-07-04 | 架构组 | 首版详细设计，对齐 PRD 全部 15 项决策 |
 | 1.1 | 2026-07-04 | 评审组 | 深度技术评审改进：修正 P0 安全/正确性缺陷 3 项、P1 逻辑/架构缺陷 2 项、P2 工程实践 3 项；新增错误处理规约、灾难恢复、凭证热更新等章节；标记 6 项待确认事项 |
 | 1.2 | 2026-07-04 | 评审组 | 据用户确认定稿 6 项决策：HITL=防误触确认、嵌入=MiniLM+BM25 混合、机器=2C4G NAS、Token=维持 512k（采用 GLM-5.2/DeepSeek-V4-Pro 等国产低价模型，成本非约束）、L3=维持 3 枚举、OS 加固=基础加固；新增 Provider 层对 OpenAI 兼容厂商（GLM/DeepSeek）的支持说明 |
+| 1.3 | 2026-07-07 | 架构组 | 据 spike 验证落地 7 项修订（详见 [`SPIKE_REPORT.md`](./SPIKE_REPORT.md)）：①技术栈版本更新为实测可用大版本（langgraph 1.2.7 / langchain-core 1.4.8 / mcp 1.28.1 等，Python 3.14 实测）；②§3.3 补 approval_id 透传机制（InjectedToolArg）+ MCP ClientSession 生命周期约束 + content block 分层；③§3.5 确认 `deepseek-v4-pro` 真实可用且默认思考模式，旧别名 chat/reasoner 将弃用；④§5 补 MCP 返回 content block 分层说明；⑤§6.6 闸 3 补 reasoning tokens 计入；⑥§6.7 HITL 流程图 approval_id 改为从图 state 读取；⑦§11.1 明确异步路径用 AsyncSqliteSaver |
 
 > 🔧 [版本] 修改说明：本文为 v1.0 的评审定稿版（v1.2）。v1.1 为评审改进草稿（含 6 项 ❓ 待确认），v1.2 据用户回复将 6 项定稿并移除 ❓ 标注（改为 `✅ [已定稿]`）；工程修正点以 `> 🔧 [Pn-m]` 标注，新增章节以 `> 🆕 新增章节` 标注。v1.0 原文保留于 `DETAILED_DESIGN.md` 未改动，便于逐节对照。
 
@@ -101,12 +103,12 @@ flowchart LR
 
 | 层 | 选型 | 版本/说明 | PRD 依据 |
 | :--- | :--- | :--- | :--- |
-| 后端语言 | Python | 3.11+（类型提示、asyncio 原生） | §2 |
+| 后端语言 | Python | 3.11+（类型提示、asyncio 原生；spike 实测 3.14 可用） | §2 |
 | Web 框架 | FastAPI + Uvicorn | 单 worker，承载 REST + SSE + Webhook | §3.1 |
-| Agent 编排 | LangGraph | 原生支持 HITL interrupt、状态机、步骤级 token 计量；**须配持久化 Checkpointer**（见 §3.5） | §3.3 |
-| LLM Provider | LangChain + `langchain-anthropic` / `langchain-openai` | Provider 抽象层：Claude/GPT 原生；**GLM-5.2 / DeepSeek-V4-Pro 等国产模型经 OpenAI 兼容端点接入**（决策#16） | 决策#2 |
-| MCP | `mcp` 官方 Python SDK | stdio 传输，子进程方式被 Agent 加载 | §2 |
-| MCP↔LangChain 桥 | `langchain-mcp-adapters` | 将 MCP 工具包装为 LangChain Tool | §3.2 |
+| Agent 编排 | LangGraph | 原生支持 HITL interrupt、状态机、步骤级 token 计量；**须配持久化 Checkpointer**（见 §3.5）。spike 实测：`langgraph>=1.2.7`，`create_react_agent` 已 deprecated 迁移至 `langchain.agents.create_agent`（见 §3.5） | §3.3 |
+| LLM Provider | LangChain + `langchain-openai` / `langchain-anthropic` | Provider 抽象层：Claude/GPT 原生；**`deepseek-v4-pro` 等 OpenAI 兼容厂商经 base_url 接入**（决策#16）。spike 实测：`langchain-openai>=1.3.3` | 决策#2 |
+| MCP | `mcp` 官方 Python SDK | stdio 传输，子进程方式被 Agent 加载。spike 实测：`mcp>=1.28.1`，in-process 加载经 `mcp.shared.memory.create_connected_server_and_client_session`（见 §3.3/§10.4） | §2 |
+| MCP↔LangChain 桥 | `langchain-mcp-adapters` | 将 MCP 工具包装为 LangChain Tool。spike 实测：`langchain-mcp-adapters>=0.3.0`，`load_mcp_tools(session)` 路径（见 §3.3） | §3.2 |
 | SSH | asyncssh（≥ 2.14） | 异步并发，受限命令执行；list 形参依赖其 `shlex.quote` 行为（见 §3.4） | §2 |
 | 加密 | cryptography（Fernet + PBKDF2HMAC） | 凭证加密落盘 | §3.1 FR1.2 |
 | 向量库 | Chroma（嵌入式，持久化到卷） | 本地零依赖 | 决策#10 |
@@ -116,6 +118,7 @@ flowchart LR
 | 前端 UI | TailwindCSS + shadcn/ui + TanStack Query + Zustand | 现代化仪表盘 | §3.1 |
 | 容器编排 | Docker Compose | bastion-app + cloudflared 两服务，共享专用网络 | 决策#11 |
 | CI | GitHub Actions | Ruff + Flake8 + mypy + pytest | §4.3 |
+| Checkpointer 后端 | `langgraph-checkpoint-sqlite` | spike 实测：`>=3.1.0`；**异步路径须用 `AsyncSqliteSaver`**（`langgraph.checkpoint.sqlite.aio`），同步 `SqliteSaver` 仅适用于纯同步测试图（见 §11.1） | §3.5/§11.1 |
 
 > 🔧 [P2-6] 修改说明：嵌入模型已定稿为 MiniLM + BM25 混合检索（用户确认，机器为 2C4G NAS，不升级大模型）。MiniLM 对中英混杂运维日志语义较弱，靠 BM25 关键词检索补足，详见 §3.6。
 > 🔧 [评审补充#R1] 修改说明：明确 LangGraph 须配置持久化 Checkpointer（v1.0 仅写“状态持久化”未指定后端），否则进程崩溃后挂起的 HITL 调查无法恢复（见 §11）。
@@ -303,6 +306,15 @@ flowchart TB
 
 **JSON-RPC 接口契约：** 统一遵循 MCP 协议 `tools/call`；输入/输出 JSON Schema 详见 §5。所有工具返回结构统一为 `{ok: bool, data?: ..., error?: {code, message}}`。
 
+> 🔧 [P1-4/spike-04 修订] 修改说明：spike 04 暴露 `approval_id` 透传断链问题——`create_react_agent` 默认机制下 resume 注入的 `approval_id` **不会自动透传到 `execute_remediation` 工具参数**。v1.2 原文写"resume 时由 Agent 注入"过于笼统，此处明确实现机制（三选一，推荐方案 A）：
+> - **方案 A（推荐）— `InjectedToolArg`：** 将 `approval_id` 声明为 `langchain_core.tools.InjectedToolArg`，由 LangGraph ToolNode 从图状态读取并注入，Agent 调用工具时无需在 `args` 里传它。`approval_id` 在 resume 时写入图 state（见 §6.7 修订）。
+> - **方案 B — 自定义 ToolNode：** resume 后拦截 L3 调用，手动把 state 里的 `approval_id` 注入 tool args 再执行。
+> - **方案 C — MCP Server 侧从上下文读取：** PermissionGate 不依赖工具参数，改为从调用上下文/图状态读取 `approval_id`（更贴近"防御性校验"定位，但 MCP Server 须能访问图状态）。
+>
+> **MCP ClientSession 生命周期约束 `[spike-02 修订]`：** `langchain-mcp-adapters` 的 `load_mcp_tools(session)` 返回的 `BaseTool` **生命周期绑定 session**——离开 `async with create_connected_server_and_client_session(...)` 上下文后 session 关闭，工具失效。故 **MCP ClientSession 须与 Agent 同生命周期**（整个调查期间常驻），不能每次工具调用新建/销毁 session。实施时 MCP Client 作为 Agent 的长生命周期依赖注入（生产实现用 stdio 子进程常驻；CI 测试用 in-process 常驻 session，见 §10.4）。
+>
+> **MCP 返回结构分层 `[spike-02 修订]`：** MCP 工具经 `langchain-mcp-adapters` 包装后，`ainvoke` 返回 **content block 列表** `[TextContent(text=...)]`，**非纯字符串**。本设计 §5 所述"统一返回 `{ok, data}` JSON"是该 content block 的 **text 字段内层 JSON**，外层还包一层 MCP content block。Agent 读取工具结果时须经 `_extract_text(result)` 提取首个 text block 的 `text` 字段，再 `json.loads` 解析内层契约。
+
 **与其他模块交互：** 工具实现内部调用执行引擎（SSH）、RAG（Chroma）、FirebaseWriter、Vault。
 
 ### 3.4 执行引擎（asyncssh + 白名单 + 模板）
@@ -434,6 +446,8 @@ API Key 与自定义 Base URL 从 Vault 内存解密获取，不落日志。`bas
 | `openai` | GPT 系列 / **GLM-5.2** / **DeepSeek-V4-Pro** / 其他 OpenAI 兼容 | `https://api.openai.com/v1`、`https://open.bigmodel.cn/api/paas/v4`、`https://api.deepseek.com/v1` |
 
 部署时择一激活（`[决策#19]` 固定单一 vendor，不自动路由）；切换 vendor 经 `update_credential` 更新 `llm_active_provider` 后重启 Agent 即可。`temperature=0` 降低运维场景幻觉。`max_tokens_per_call` 由 Token 预算控制器动态注入（见 §6.6）。
+
+> 🔧 [spike-03 修订] 修改说明：spike 03 实测 `deepseek-v4-pro` 经 `ChatOpenAI(model="deepseek-v4-pro", base_url="https://api.deepseek.com/v1")` **真实可用，且默认启用思考模式**（`usage.output_token_details.reasoning` 非零）——即官方推荐的复杂 Agent 场景配置。`deepseek-chat` / `deepseek-reasoner` 为**即将弃用的旧别名**（2026-07-24 23:59 停用，当前指向 `deepseek-v4-flash` 的非思考/思考模式），新部署**不应使用**。`base_url` 表中 "DeepSeek-V4-Pro" 的 API id 即 `deepseek-v4-pro`，已确认与设计首选一致。
 
 **SRE 人设 Prompt 框架：**
 
@@ -757,6 +771,17 @@ ingress:
 
 统一返回：`{ok: bool, data?: object, error?: {code: string, message: string}}`。错误码目录见 §5.7。
 
+> 🔧 [spike-02 修订] 修改说明：**MCP 工具返回结构分层澄清。** spike 02 实测发现，经 `langchain-mcp-adapters` 包装后，MCP 工具的 `ainvoke` 返回值是 **content block 列表** `[TextContent(type="text", text="...")]`，而非纯字符串。本节所述"统一返回 `{ok, data}` JSON"是该 content block 的 **`text` 字段内层 JSON**，外层还包一层 MCP 协议的 content block 结构。完整结构如下：
+>
+> ```
+> MCP 工具 ainvoke 返回 (LangChain Tool 层):
+>   [ TextContent(type="text", text="<内层 JSON 字符串>") ]
+>                                              │
+>                                              └─ json.loads 解析得 ──> {ok: bool, data?: ..., error?: {code, message}}
+> ```
+>
+> Agent 读取工具结果时须经提取步骤：取列表首个元素的 `text` 字段 → `json.loads` → 得内层 `{ok, data}` 契约。实施时封装 `_extract_tool_result(result) -> dict` 工具函数统一处理（spike 02 已验证）。此分层不影响工具的 JSON Schema 契约（§5.1-5.6 的输入/输出 Schema 描述的是**内层** data 结构）。
+
 ### 5.1 `setup_webhook_tunnel`（L0 基建）
 **职责：** 基于 Vault 中 CF API Token 创建/校验隧道与 DNS 路由，确保 `cloudflared` 已配置。无外部命令参数输入。
 
@@ -1035,7 +1060,7 @@ stateDiagram-v2
 1. **预算账户：** 每个 investigation 在 LangGraph state 持 `token_usage`（input+output 累计），同步写 Firebase。
 2. **闸 1 — 事前估算（PreBudget 节点）：** 每次 LLM 调用前估算 prompt tokens。**跨厂商统一用保守的字符启发式估算**（中文 ≈ chars/1.5、英文 ≈ chars/4，取较大值），不依赖特定分词器——因 GLM-5.2 / DeepSeek-V4-Pro 等国产模型分词器与 tiktoken 不同，tiktoken 估算会失真。事后由 API 响应的真实 `usage` 修正（闸 3）。若 `prompt_tokens + 预期_output > 剩余预算` → 先尝试截断上下文（丢弃较早的 Journal / 日志摘要，保留最近 + finding）；截断后仍超 → 立即终止，工单置 `FAILED_TOKEN_BUDGET`，附 `investigation_gap: token budget exhausted (pre-call)`。
 3. **闸 2 — Provider 侧硬限：** 每次 LLM 调用动态设 `max_tokens = min(模型上限, 剩余预算)`，从 Provider 侧防止单次响应超支。
-4. **闸 3 — 事后累计：** LLM 响应返回后，用真实 `usage`（input+output）更新 `token_usage`；若 `token_usage >= TOKEN_BUDGET` → 终止、置 `FAILED_TOKEN_BUDGET`，附 `investigation_gap: token budget exhausted (post-call)`。
+4. **闸 3 — 事后累计：** LLM 响应返回后，用真实 `usage` 更新 `token_usage`。**累计项须含 reasoning tokens**——`deepseek-v4-pro` 默认启用思考模式，`usage_metadata.output_token_details.reasoning` 非零且已计入 `output_tokens`，但实现时须显式读取 `output_tokens`（已含 reasoning）而非仅 `response.output` 文本长度，避免思考模式长推理导致预算偷偷超支。若 `token_usage >= TOKEN_BUDGET` → 终止、置 `FAILED_TOKEN_BUDGET`，附 `investigation_gap: token budget exhausted (post-call)`。
 5. **闸 4 — 滑动窗口均值：** 维护近 N 步的 token 消耗均值，若按当前速率推算会在预算内无法完成既定探测路径 → 提前收敛（跳过低价值探测，直接进入 summary），避免硬超限。
 
 - **硬上限：** `TOKEN_BUDGET`（默认 **512k tokens/次** `[决策#18]`，不变）。
@@ -1049,14 +1074,14 @@ stateDiagram-v2
 ```mermaid
 flowchart TB
     L3["Agent 识别 L3 工具"] --> Render["模板渲染 + 校验(预览)"]
-    Render --> Req["interrupt: 写 hitl_requests(PENDING)<br/>含 rendered_cmd 预览/影响"]
+    Render --> Req["interrupt: 写 hitl_requests(PENDING)<br/>含 rendered_cmd 预览/影响<br/>**同时 approval_id 写入图 state**"]
     Req --> Persist["状态持久化至 Checkpointer"]
     Persist --> UI["WebUI 推送审批弹窗"]
     UI --> Decision{人工}
-    Decision -->|approve| Resume["resume(approval_id)"]
+    Decision -->|approve| Resume["resume: approval_id 已在 state<br/>ToolNode/InjectedToolArg 从 state 读取注入"]
     Decision -->|reject| Rej["resume(reject) → ABORTED"]
     Decision -->|30min 超时| Rej
-    Resume --> Gate["MCP PermissionGate 校验 approval_id"]
+    Resume --> Gate["MCP PermissionGate 校验 approval_id<br/>(从 state 读取, 非工具参数)"]
     Gate --> Exec["ExecutionEngine.run_remediation(30s)"]
     Gate -->|无效/复用| Rej
     Exec --> Record["submit_journal(observation)"]
@@ -1065,6 +1090,8 @@ flowchart TB
 - 审批界面**必须**展示：`target_host`、`action_type`、渲染后的完整命令预览、预期影响、关联工单。
 - 审批决策记入 `hitl_requests`（`decision`、`decided_by`、`decided_at`）供审计。
 - 仅 L3 触发 HITL；L1/L2 只读自主执行，但全部记审计日志。
+
+> 🔧 [spike-04 修订] 修改说明：**`approval_id` 透传机制明确。** spike 04 暴露 `create_react_agent` 默认机制下 resume 注入的 `approval_id` **不会自动透传到 `execute_remediation` 工具参数**。v1.2 原文"resume 时由 Agent 注入"过于笼统，此处明确：**`approval_id` 在 interrupt 时写入 LangGraph 图 state，resume 后由 ToolNode（经 `InjectedToolArg`）或自定义 ToolNode 从 state 读取并注入工具调用**，Agent 调用 `execute_remediation` 时无需在 `args` 里传 `approval_id`。MCP Server 侧 PermissionGate 亦从 state（或调用上下文）读取 `approval_id` 做防御性校验，不依赖工具参数。实现方案三选一见 §3.3 修订（推荐方案 A `InjectedToolArg`）。
 
 > 🔧 [P1-4] 修改说明：**单用户 HITL 定位声明。** `[决策#12]` 锁定单用户模型，触发者与审批者为同一账号，HITL 不构成“权限隔离”，而定位为“**防误触确认**”：要求人类在执行前显式审阅渲染命令与影响并二次确认，防 Agent 误判导致误修复。此为既定安全权衡，已在 §9.2 记录。
 >
@@ -1418,6 +1445,11 @@ networks:
 ### 11.1 进程崩溃恢复
 
 **前提：** LangGraph 配置持久化 Checkpointer（默认 SQLite `/data/checkpoints.sqlite`，卷持久化）。每个 investigation 的图状态（含 `token_usage`、待执行节点、interrupt 上下文）按检查点持久化。
+
+> 🔧 [spike-01/04 修订] 修改说明：**Checkpointer 后端选型明确为 `AsyncSqliteSaver`。** spike 01 用同步 `SqliteSaver` 验证了 interrupt/resume 崩溃恢复语义（只读不重放、L3 不重复执行）；但 spike 04 暴露 `create_react_agent` 走**异步路径**，同步 `SqliteSaver` 在异步调用链里会触发 `InvalidStateError`（"Synchronous calls to AsyncSqliteSaver are only allowed from a different thread"）。故：
+> - **生产实现（异步路径）**：用 `AsyncSqliteSaver`（`langgraph.checkpoint.sqlite.aio`，依赖 `aiosqlite`），全链路 `ainvoke`/`aget_state`/`aget_state_history`，**禁止混用同步 `get_state`**（会触发 `InvalidStateError`）。
+> - **纯同步测试图（如 spike 01）**：可用同步 `SqliteSaver`，仅限测试场景。
+> Checkpointer 检查点粒度经 spike 01 验证为"工具调用边界"，崩溃至多重放一步只读探测，与下文定稿一致。
 
 **Recovery Sweep（启动时执行，§6.8）：**
 1. 加载 Checkpointer，枚举未完成图。
