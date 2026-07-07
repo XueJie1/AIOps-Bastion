@@ -118,3 +118,97 @@ async def test_pbkdf2_does_not_block_event_loop(vault_path):
     # 两者并发, 总耗时应远小于串行 (PBKDF2 约 1-2s + 0.05s)
     # 这里只断言 sleep 没被严重推迟 (放宽到 1s, 容忍 PBKDF2 调度开销)
     assert elapsed < 1.0, f"事件循环被阻塞: {elapsed:.2f}s"
+
+
+# === A2: 嵌套路径凭证更新 (§4.6: llm_providers.<name>.api_key / ssh_keys.<host>) ===
+
+@pytest.mark.asyncio
+async def test_update_nested_credential_dot_path(vault_path):
+    """点路径更新嵌套字段 (llm_providers.deepseek.api_key), 不破坏 bundle 结构。"""
+    vault = Vault(vault_path)
+    await vault.initialize("master")
+    await vault.unlock("master")
+
+    await vault.update_credential("llm_providers.deepseek.api_key", "sk-new-123")
+
+    # 同路径读回
+    assert await vault.get("llm_providers.deepseek.api_key") == "sk-new-123"
+
+    # bundle 结构未破坏: deepseek 子树完整, 其他字段未受影响
+    deepseek = await vault.get("llm_providers.deepseek")
+    assert deepseek["model"] == "deepseek-v4-pro"
+    assert deepseek["base_url"] == "https://api.deepseek.com/v1"
+    assert deepseek["api_key"] == "sk-new-123"
+    glm = await vault.get("llm_providers.glm")
+    assert glm["api_key"] == ""
+
+    # 落盘持久: lock + unlock 后仍读到新值
+    await vault.lock()
+    await vault.unlock("master")
+    assert await vault.get("llm_providers.deepseek.api_key") == "sk-new-123"
+
+
+@pytest.mark.asyncio
+async def test_update_nested_credential_host_with_dot(vault_path):
+    """host_id 含 '.' (如 xuejie1.top) 时传 list, 避免 split 歧义 (§4.6 ssh_keys.<host>)。"""
+    vault = Vault(vault_path)
+    await vault.initialize("master")
+    await vault.unlock("master")
+
+    # list 形式: host 含点不被拆分
+    await vault.update_credential(["ssh_keys", "xuejie1.top"], "-----BEGIN KEY-----")
+    assert await vault.get(["ssh_keys", "xuejie1.top"]) == "-----BEGIN KEY-----"
+
+    # 字符串形式 "ssh_keys.xuejie1.top" 会被拆成 [ssh_keys, xuejie1, top] → KeyError
+    # 即 host 含点场景必须用 list, 这是 split 语义的必然结果
+    with pytest.raises(KeyError):
+        await vault.get("ssh_keys.xuejie1.top")
+
+
+# === D2: vault.enc 格式损坏拒绝 (§8.3) ===
+
+@pytest.mark.asyncio
+async def test_vault_corrupted_magic_rejected(vault_path):
+    """magic 不符 → ValueError。"""
+    vault = Vault(vault_path)
+    await vault.initialize("master")
+    data = vault_path.read_bytes()
+    vault_path.write_bytes(b"XXXX" + data[4:])
+    with pytest.raises(ValueError, match="magic"):
+        await vault.unlock("master")
+
+
+@pytest.mark.asyncio
+async def test_vault_truncated_rejected(vault_path):
+    """文件过短 (< 41B 固定头) → ValueError。"""
+    vault = Vault(vault_path)
+    await vault.initialize("master")
+    vault_path.write_bytes(b"AIOV\x01short")
+    with pytest.raises(ValueError, match="过短"):
+        await vault.unlock("master")
+
+
+@pytest.mark.asyncio
+async def test_vault_unsupported_version_rejected(vault_path):
+    """version 不支持 → ValueError。"""
+    vault = Vault(vault_path)
+    await vault.initialize("master")
+    data = vault_path.read_bytes()
+    # version byte 在偏移 4
+    vault_path.write_bytes(data[:4] + bytes([0xFF]) + data[5:])
+    with pytest.raises(ValueError, match="版本"):
+        await vault.unlock("master")
+
+
+# === D3: vault.enc 文件权限 0600 (§4.1) ===
+
+@pytest.mark.asyncio
+async def test_vault_file_permissions_restricted(vault_path):
+    """vault.enc 权限 0600 (§4.1)。
+
+    容错: 容器非属主场景 chmod 可能不完全生效, 只断言 group/others 无权限。
+    """
+    vault = Vault(vault_path)
+    await vault.initialize("master")
+    mode = vault_path.stat().st_mode & 0o777
+    assert mode & 0o077 == 0, f"vault.enc 权限过宽 (group/others 可访问): {oct(mode)}"

@@ -15,7 +15,12 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from .exceptions import CommandValidationError, PathNotAllowlistedError, UnknownActionError
+from .exceptions import (
+    CommandValidationError,
+    HITLRejectedError,
+    PathNotAllowlistedError,
+    UnknownActionError,
+)
 
 # === 白名单与正则 (§4.2) ===
 
@@ -160,8 +165,9 @@ class ExecutionEngine:
         if not re.fullmatch(IDENT_RE, host):
             raise CommandValidationError(f"非法 target_host: {host!r}")
         if not approval_id:
-            # PermissionGate: 无 approval_id 拒绝 (设计 §3.3, spike-04 修订)
-            raise CommandValidationError(
-                "L3 修复缺 approval_id (PermissionGate 校验失败)"
+            # PermissionGate: 无 approval_id 即授权不通过 (§3.3/§5.7 HITL_REJECTED;
+            # exceptions.py HITLRejectedError docstring 涵盖 "approval_id 无效/已复用")
+            raise HITLRejectedError(
+                "L3 修复缺 approval_id (PermissionGate 授权失败)"
             )
         return render(action_type, params)

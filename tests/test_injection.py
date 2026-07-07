@@ -9,6 +9,7 @@ import pytest
 
 from aiops_bastion.exceptions import (
     CommandValidationError,
+    HITLRejectedError,
     PathNotAllowlistedError,
     UnknownActionError,
 )
@@ -119,9 +120,9 @@ def test_l3_render_produces_argv_list():
 
 @pytest.mark.injection
 def test_l3_without_approval_id_rejected():
-    """L3 修复缺 approval_id 被 PermissionGate 拒绝 (spike-04 修订)。"""
+    """L3 修复缺 approval_id → HITL_REJECTED (§5.7: approval_id 无效即授权失败)。"""
     engine = ExecutionEngine()
-    with pytest.raises(CommandValidationError):
+    with pytest.raises(HITLRejectedError):
         engine.run_remediation("node-a", "restart_service", {"unit": "nginx"})
 
 
@@ -151,3 +152,18 @@ def test_readonly_host_injection_rejected():
     engine = ExecutionEngine()
     with pytest.raises(CommandValidationError):
         engine.run_readonly("node-a; rm -rf /", "systemd", "nginx")
+
+
+# === D1: L3 run_remediation 的 target_host 注入同样拒绝 (对称覆盖) ===
+
+@pytest.mark.injection
+def test_remediation_host_injection_rejected():
+    """L3 run_remediation 的 target_host 也走 IDENT_RE (与 run_readonly 对称)。"""
+    engine = ExecutionEngine()
+    with pytest.raises(CommandValidationError):
+        engine.run_remediation(
+            "node-a; rm -rf /",
+            "restart_service",
+            {"unit": "nginx"},
+            approval_id="apv-1",
+        )
