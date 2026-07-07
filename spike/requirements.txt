@@ -1,0 +1,7 @@
+langgraph>=0.2.62
+langgraph-checkpoint-sqlite>=2.0.6
+langchain-core>=0.3.36
+langchain-openai>=0.2.14
+langchain-mcp-adapters>=0.1.6
+mcp>=1.2.0
+python-dotenv>=1.0.1

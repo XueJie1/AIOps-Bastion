@@ -1,0 +1,53 @@
+# === Secrets & runtime data (NEVER commit) ===
+# vault.enc 含加密凭证；data/ 含 chroma/logs/checkpoints/outbox
+/data/
+.env
+.env.*
+!.env.example
+**/creds.json
+**/vault.enc
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# === Node / Frontend ===
+node_modules/
+frontend/dist/
+frontend/build/
+.vite/
+*.tsbuildinfo
+
+# === Local DB / checkpoints ===
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+/checkpoints/
+
+# === IDE / OS ===
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# === Logs ===
+*.log
+/logs/
