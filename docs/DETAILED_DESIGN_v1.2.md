@@ -1317,11 +1317,11 @@ networks:
   "telegram_bot_token": "123:abc...",
   "llm_providers": {
     "glm":       {"vendor": "openai",    "model": "glm-5.2",       "api_key": "<GLM key>",      "base_url": "https://open.bigmodel.cn/api/paas/v4"},
-    "deepseek":  {"vendor": "openai",    "model": "deepseek-chat", "api_key": "<DeepSeek key>", "base_url": "https://api.deepseek.com/v1"},
+    "deepseek":  {"vendor": "openai",    "model": "deepseek-v4-pro", "api_key": "<DeepSeek key>", "base_url": "https://api.deepseek.com/v1"},
     "anthropic": {"vendor": "anthropic", "model": "claude-...",    "api_key": "sk-ant-...",     "base_url": "https://api.anthropic.com"},
     "openai":    {"vendor": "openai",    "model": "gpt-...",       "api_key": "sk-...",         "base_url": "https://api.openai.com/v1"}
   },
-  "llm_active_provider": "glm",
+  "llm_active_provider": "deepseek",
   "webhook_secret": "<随机长串>"
 }
 ```
