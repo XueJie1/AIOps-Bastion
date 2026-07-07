@@ -52,3 +52,12 @@ Thumbs.db
 *.log
 /logs/
 .claude/
+
+# Pi Coding Agent session logs and exports
+.pi/
+pi-session-*
+*.pi-session.json
+
+# Local agent dependencies and caches
+.pi_cache/
+.piignore
