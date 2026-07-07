@@ -1,0 +1,39 @@
+# Docker Compose 结构 (网络修正版, 详见设计 §7.4 [评审补充#R8])
+# bastion-app: 主应用 (FastAPI + Agent + MCP Server)
+# cloudflared: 出站长连接容器, 唯一入站通道
+#
+# 安全语义: bastion-app 不发布端口到宿主机 (expose 仅 bastion-net 可见),
+# cloudflared 经 http://bastion-app:8080 回源, 不对公网/局域网暴露。
+services:
+  bastion-app:
+    build: .
+    image: aiops-bastion:0.1
+    env_file: .env                # 非敏感配置 (真实 .env 被 gitignore)
+    volumes:
+      - ./data/vault:/data/vault          # vault.enc (加密凭证)
+      - ./data/chroma:/data/chroma        # 向量库
+      - ./data/logs:/data/logs            # 本地日志 (含原始日志)
+      - ./data/outbox:/data/outbox        # FB 写入失败补偿 [评审补充#R15]
+      - ./data/checkpoints:/data/checkpoints  # LangGraph Checkpointer [评审补充#R1]
+    expose:
+      - "8080"                    # 仅 bastion-net 内可见, 不发布到宿主机
+    ulimits:
+      core: 0                    # 禁用 core dump [评审补充#R6]
+    restart: unless-stopped
+    networks:
+      - bastion-net
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel run
+    volumes:
+      - ./cloudflared:/etc/cloudflared:ro
+    restart: unless-stopped
+    depends_on:
+      - bastion-app
+    networks:
+      - bastion-net
+
+networks:
+  bastion-net:
+    driver: bridge
