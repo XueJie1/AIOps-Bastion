@@ -47,3 +47,27 @@ class VaultLockedError(AIOpsError):
 
     对应错误码 AUTH_REQUIRED (§5.7)。
     """
+
+
+# === SSH 执行 (§3.4 / §5.7) ===
+class ExecTimeoutError(AIOpsError):
+    """SSH 执行超时或 slot 排队等待超时。
+
+    对应错误码 EXEC_TIMEOUT (§5.7)。
+    两种来源 (§3.4 [P2-8]):
+      - slot 等待超 wait_slot (queue wait timeout) -> 不重试, Agent 记 investigation_gap;
+      - 命令执行超 5s(只读)/30s(修复) -> 释放连接, 记超时。
+    """
+
+    def __init__(self, message: str, *, kind: str = "exec") -> None:
+        """kind: "exec" (命令执行超时) 或 "queue" (slot 等待超时), 用于区分告警来源。"""
+        self.kind = kind
+        super().__init__(message)
+
+
+class SSHConnectionError(AIOpsError):
+    """SSH 连接失败/异常断开。
+
+    对应错误码 INTERNAL (§5.7)。
+    连接池剔除该 host 连接, 下次按需重建。
+    """

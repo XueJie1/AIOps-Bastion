@@ -337,6 +337,8 @@ class ExecutionEngine:
         """L3 修复：走硬编码模板，参数经正则校验后代入，30s 超时（可配）。"""
 ```
 
+> 🔧 [M2 实施] 修改说明：`ReadonlyCommand`/`RemediationAction` 类型对象简化为 primitives（`run_readonly(host, form, name)` / `run_logs(host, form, name, lines)` / `run_remediation(host, action_type, params, *, approval_id)`），字段与 §5.2/§5.6 工具 schema 对齐，避免额外的类型封装层。另增 `run_logs` 专司 L2 日志（`journalctl`/`docker logs`，与 L1 探测的 `systemctl status`/`docker inspect` 分离）。M1 阶段的同步 `ExecutionEngine` 桩（返回 `list[str]`）已在 M2 由 `AsyncSSHExecutor`（`async -> ExecResult` + 连接池 + Semaphore + 超时熔断）取代；`build_status_cmd`/`build_logs_cmd`/`render` 仍为模块级纯函数（防御#1，单测无网络）。可测试性：抽 `SSHExecutor` Protocol + `FakeSSHExecutor` 替身（§10.4）。
+
 > 🔧 [P2-8] 修改说明：`run_readonly` / `run_remediation` 新增 `wait_slot` 参数（默认 30s）。当 4 个 SSH slot 全被占时，新调用排队等待；超过 `wait_slot` 仍未获取 slot → 返回 `EXEC_TIMEOUT`（错误码复用，消息标注“queue wait timeout”），Agent 记 `investigation_gap`。配套增加队列深度指标与告警（见 §7.1、§7.2）。
 > 🔧 [评审补充#R4] 修改说明：L3 修复超时由 5s 调整为 **30s 可配**。`docker restart` 含 stop grace period 常超过 5s，5s 会误熔断正常修复；只读探测维持 5s。此为对 `[PRD §4.2]` “5s 超时”的细化：只读 5s、修复 30s。
 
@@ -368,6 +370,8 @@ def build_status_cmd(form: str, name: str) -> list[str]:
 > - **`list[str]` 形态是第二道防线**：即便某参数含元字符，asyncssh 的 `shlex.quote` 会将其单引号包裹使其被 shell 视为字面量（注入测试须验证此行为，并锁定 asyncssh ≥ 2.14）。
 > - **第三道防线（远端硬化，推荐）**：在业务节点 `authorized_keys` 中为 Bastion 公钥设置 `command="rbash"` 或 `restrict`，或使用 forced-command wrapper，使远端 shell 仅允许受限命令集，彻底消除 shell 解析面。此为可选加固，见 §4.2。
 > v1.0 “进一步降低拼接风险”的表述因不精确而修正为上述三层防线描述。
+>
+> 🔧 [M2 实施源码核对] 修改说明：M2 接入真 asyncssh 时核对 asyncssh 2.24.0 源码，发现上述第二条（“asyncssh 的 `shlex.quote` 会单引号包裹”）**不成立**：`SSHClientConnection.run()` 经 `create_session(command: Optional[str])` 接受**单个 command 字符串**，客户端 `self._make_request(b'exec', String(command))` **原样下发**、**不做任何引用**；包内 `shlex.quote` 仅用于 `proxy_command`，命令路径无引用工具（`asyncssh.quote` 不公开）。故第二道防线的引用职责由 **Bastion 侧执行器 `shlex.join(argv)`** 显式持有（不依赖第三方内部行为，更可测）。三层防线修正为：① `IDENT_RE` fullmatch（核心）；② 执行器 `shlex.join`（第二，我方代码）；③ 远端 `authorized_keys` forced-command `command="rbash"`（第三，靶机侧；asyncssh 尊重 `get_key_option('command')`，源码 `channel.py:1680`）。C1 验收改为验证我方 `shlex.join`（单元 + 真靶机 echo 往返）。详见 `docs/REMOTE_HARDENING.md`。
 
 **L3 硬编码模板映射 `[决策#7][决策#8]`：**
 
@@ -808,6 +812,8 @@ ingress:
 **输出 Schema：** `{ok: true, data: {target_host, service_name, status: "active"|"inactive"|"unknown", detail}}`
 **安全校验：** `form` 枚举白名单；`service_name` 走 `IDENT_RE`；经 `ExecutionEngine.run_readonly`。
 **状态映射 `[评审补充#R11]`：** `systemctl is-active` → `active`/`inactive`/`unknown`；`docker inspect` 据 `.State.Running` 映射；`docker compose ps` 据服务状态映射。
+
+> 🔧 [M2 实施] 修改说明：M2 实现用 `systemctl status`（非 `is-active`）走 `build_status_cmd`，按 exit code 映射（0=active / 3=inactive / 其余=unknown），与 R11 的 `is-active` 语义等价；避免改动 M1 已测的 `build_status_cmd`（systemd 形态即 `["systemctl","status",name]`）。`docker inspect` 解析 JSON `.State.Running`；`docker compose ps` 据表体行含 `running` 判定。状态映射逻辑见 `tools._map_status`。
 **错误处理：** 连接失败 `INTERNAL`；超时 `EXEC_TIMEOUT`。
 
 ### 5.3 `fetch_service_logs`（L2 日志）
@@ -817,15 +823,18 @@ ingress:
 ```json
 {
   "type": "object",
-  "required": ["target_host", "service_name", "lines"],
+  "required": ["target_host", "service_name", "form", "lines"],
   "properties": {
     "target_host": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,128}$"},
     "service_name": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,128}$"},
+    "form": {"type": "string", "enum": ["systemd", "docker"]},
     "lines": {"type": "integer", "minimum": 1, "maximum": 500}
   }
 }
 ```
 **输出 Schema：** `{ok: true, data: {target_host, service_name, logs: string, truncated: bool}}`
+
+> 🔧 [M2 实施] 修改说明：原 §5.3 schema 无 `form` 字段，无法选择 `journalctl`（systemd）vs `docker logs`（docker）。补 `form` 参数（systemd|docker，与 `execute_discovery` 对齐）。compose 日志需先解析容器名，延后。`run_logs` 经 `build_logs_cmd` 构建命令：systemd -> `journalctl -u <name> -n <lines> --no-pager`；docker -> `docker logs <name> --tail <lines>`；flag 硬编码（非 Agent 输入），唯一变量 `name` 经 IDENT_RE。
 **安全校验：** `lines` 上限 500；返回前按 token 估算（≈ chars/4）截断至预算内（默认 ≤ 8k tokens）；`truncated` 标记。
 **错误处理：** 超时 `EXEC_TIMEOUT`；日志为空仍 `ok:true, data.logs=""`。
 

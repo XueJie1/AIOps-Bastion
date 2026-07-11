@@ -83,6 +83,7 @@ markers = [
     "injection: 注入对抗测试 (§4.3)",
     "budget: Token 预算熔断测试 (§6.6)",
     "crash: 崩溃恢复测试 (§6.8/§11)",
+    "integration: 真靶机 SSH 集成测试 (env 门控, 无 env 跳过)",
 ]
 
 [build-system]
