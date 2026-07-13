@@ -1,13 +1,13 @@
 # AIOps-Bastion 任务交接文档
 
 > 给开新 session 用。自包含，读完即可进入状态。
-> 最后更新: 2026-07-09 | M2 代码+单测完成（待提交） | 上一个提交 `88a9024`
+> 最后更新: 2026-07-11 | 对应提交 `af10ff2` | 本地与 GitHub 同步
 
 ---
 
 ## 0. 一句话现状
 
-**M2 探测网关代码+单测已完成,真靶机集成测试已通过(91 全过)。下一步 M3。**
+**M2 探测网关全部完成（代码+单测+真靶机集成全通过，91 测试全绿），已推 GitHub。下一步 M3。**
 M2 把 M1 同步执行桩升级为真 asyncssh 执行引擎 + §5.2/§5.3 工具 + rbash 第三道防线端到端验证路径。
 源码核对发现并修正了设计 §3.4 [P2-7] 的一处事实错误（asyncssh 不引用）。
 
@@ -70,6 +70,7 @@ M2 把 M1 同步执行桩升级为真 asyncssh 执行引擎 + §5.2/§5.3 工具
 
 ### Git 历史（最新在上）
 ```
+af10ff2 feat(m2): 探测网关 - 真 asyncssh 执行引擎 + 工具链 + rbash 三层防线
 88a9024 docs: 任务交接文档 HANDOFF.md
 5e5c0f3 docs: §8.3 同步 spike-03 - deepseek-v4-pro / active=deepseek
 dc60c3b chore: gitignore 补 Pi agent 忽略
@@ -79,8 +80,7 @@ fae8438 chore: 项目脚手架 - pyproject + Docker + CI + 包结构
 e538544 docs: 设计文档 v1.3 - 据 spike 验证落地 7 项修订
 0409564 chore: 项目基线 - 设计文档 + 取舍说明 + spike 验证
 ```
-> **M2 改动尚未提交**（用户未要求 commit）。改动见 `git status`，建议提交信息：
-> `feat(m2): 探测网关 - 真 asyncssh 执行引擎 + 工具链 + rbash 验证路径`
+> **M2 已提交并推 GitHub**（commit `af10ff2`，公开仓库；HANDOFF 真实靶机信息已脱敏）。
 
 ### M1 安全地基（已完成，已审查修复）
 源码三件 + 测试三件，34 测试全过、ruff 干净：
@@ -101,8 +101,8 @@ e538544 docs: 设计文档 v1.3 - 据 spike 验证落地 7 项修订
 - A2 `update_credential`/`get` 原扁平 `bundle[name]` 不支持 §4.6 点路径 -> 加 `_split_path`/`_get_path`/`_set_path`
 - A3 vault.enc 未写 16B recovery_salt 占位 -> 对齐 §8.3，ct 从偏移 41 读
 
-### M2 探测网关与工具链（已完成，待真靶机集成验证）
-执行引擎真接入 + 工具链 + 安全验收。**87 测试过 + 4 集成 skip（无 env）、ruff 干净、src mypy 3 E 类基线无新增**：
+### M2 探测网关与工具链（已完成，真靶机集成已通过）
+执行引擎真接入 + 工具链 + 安全验收。**91 测试全过（87 单测 + 4 真靶机集成）、ruff 干净、src mypy 3 E 类基线无新增**：
 
 | 文件 | 职责 |
 | :--- | :--- |
@@ -213,7 +213,6 @@ export AIOPS_TEST_SSH_FORM=systemd
 
 ## 9. 立即可做的下一步
 
-1. **（可选）提交 M2**：用户确认后，`git commit` M2 改动（建议信息见 §4；真靶机集成已通过，可写入提交说明）。
-2. **M3 启动**：读 §3.3/§3.5/§6.1，进 EnterPlanMode 对齐 MCP Server 包装 + Agent 接入方案。
+1. **M3 启动**：读 §3.3/§3.5/§6.1，进 EnterPlanMode 对齐 MCP Server 包装 + Agent 接入方案。重点对齐两个 spike 已暴露点：MCP ClientSession 生命周期（须与 Agent 同生命周期常驻，spike-02）、approval_id 注入机制（InjectedToolArg，spike-04）。
 
-> 本项目优先级：安全 > 可逆性 > 泛用性 > 性能 > 功能广度（见 TRADEOFFS §0）。M1 守住安全红线；M2 三层防线端到端贯通（含源码核对修正 asyncssh 行为误述）。
+> 本项目优先级：安全 > 可逆性 > 泛用性 > 性能 > 功能广度（见 TRADEOFFS §0）。M1 守住安全红线；M2 三层防线端到端贯通（含源码核对修正 asyncssh 行为误述，真靶机验证通过）。
