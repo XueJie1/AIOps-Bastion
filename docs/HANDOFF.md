@@ -1,13 +1,13 @@
 # AIOps-Bastion 任务交接文档
 
 > 给开新 session 用。自包含，读完即可进入状态。
-> 最后更新: 2026-07-15 | 对应提交 (M3 待提交) | 本地领先 GitHub
+> 最后更新: 2026-07-15 | 对应提交 `b155e1e` | 本地与 GitHub 同步
 
 ---
 
 ## 0. 一句话现状
 
-**M3 Agent 大脑接入完成（代码+单测+真 LLM 集成全通过，148 测试全绿，待提交）。下一步 M4。**
+**M3 Agent 大脑接入全部完成（代码+单测+真 LLM 集成全通过，148 测试全绿），已推 GitHub。下一步 M4。**
 M3 落地 LangGraph react agent + MCP Server handler + PermissionGate(C2 一次性消费) + AsyncSqliteSaver Checkpointer + Store Protocol(InMemory/SQLite) + FakeLLM/真 deepseek-v4-pro。两个 spike 暴露点已据源码核对落地：interrupt-in-tool 模式(approval_id 经 interrupt() 返回值透传)、in-process MCP(原生 StructuredTool 调共享 handler)。
 M2 把 M1 同步执行桩升级为真 asyncssh 执行引擎 + §5.2/§5.3 工具 + rbash 第三道防线端到端验证路径。
 源码核对发现并修正了设计 §3.4 [P2-7] 的一处事实错误（asyncssh 不引用）。
@@ -71,7 +71,7 @@ M2 把 M1 同步执行桩升级为真 asyncssh 执行引擎 + §5.2/§5.3 工具
 
 ### Git 历史（最新在上）
 ```
-(M3 待提交) feat(m3): Agent 大脑 - react agent + MCP handler + PermissionGate(C2) + Checkpointer
+b155e1e feat(m3): Agent 大脑 - react agent + MCP handler + PermissionGate(C2) + Checkpointer
 af10ff2 feat(m2): 探测网关 - 真 asyncssh 执行引擎 + 工具链 + rbash 三层防线
 88a9024 docs: 任务交接文档 HANDOFF.md
 5e5c0f3 docs: §8.3 同步 spike-03 - deepseek-v4-pro / active=deepseek
@@ -83,7 +83,7 @@ e538544 docs: 设计文档 v1.3 - 据 spike 验证落地 7 项修订
 0409564 chore: 项目基线 - 设计文档 + 取舍说明 + spike 验证
 ```
 > **M2 已提交并推 GitHub**（commit `af10ff2`，公开仓库；HANDOFF 真实靶机信息已脱敏）。
-> **M3 代码+单测+真 LLM 集成全过，待提交**（设计 🔧 修订 + TRADEOFFS 已同步；真实信息脱敏基线维持）。
+> **M3 已提交并推 GitHub**（commit `b155e1e`，公开仓库；真实信息脱敏基线维持，.env/spike/.env gitignored）。
 
 ### M1 安全地基（已完成，已审查修复）
 源码三件 + 测试三件，34 测试全过、ruff 干净：
@@ -126,7 +126,7 @@ e538544 docs: 设计文档 v1.3 - 据 spike 验证落地 7 项修订
 > ⚠️ **rbash 配置坑（M2 实战修正）：** 初版 REMOTE_HARDENING.md §3 写 `command="/bin/rbash"` 是**错的**——sshd 执行 `rbash -c "/bin/rbash"`，rbash 拒绝运行含 `/` 的命令名（拒绝自己），导致**所有命令跑不通**。正解：authorized_keys 只留 `restrict`，受限靠账户登录 shell = `/bin/rbash`（`useradd -s /bin/rbash`）。文档已修正 + 加 §3b wrapper 备选。实测这台 Debian bash 的 `rbash -c` 模式受限严格（cd/重定向均拒）。
 
 
-### M3 Agent 大脑接入（已完成，待提交）
+### M3 Agent 大脑接入（已完成，已推 GitHub）
 LangGraph react agent + MCP Server handler + PermissionGate(C2) + Checkpointer + Store Protocol。**148 测试全过（M2 的 91 + M3 新增 57）、ruff 干净、src mypy 3 E 类基线无新增**：
 
 | 文件 | 职责 |
@@ -188,7 +188,7 @@ LangGraph react agent + MCP Server handler + PermissionGate(C2) + Checkpointer +
 | :--- | :--- | :--- |
 | M1 基建与控制台 | §3.7 Vault + §3.4 白名单/模板 + §4.3 注入测试（§3.1 前端、§7.4 Docker 后续） | ✅ 核心完成；前端 Onboarding/Dashboard 未做 |
 | M2 探测网关与工具链 | §3.4 真 asyncssh 连接池+Semaphore(4)+超时熔断、§5.2/5.3 工具、§4.2 白名单+正则+远端硬化、§5 日志截断 | ✅ 完成（代码+单测+真靶机集成全通过） |
-| M3 Agent 大脑接入 | §3.5 LangGraph+Provider+Checkpointer、§3.3 MCP Server(handler)、§6.1 Chat 流、§8.1 investigations/records | ✅ 完成（代码+单测+真 LLM 集成全通过，待提交） |
+| M3 Agent 大脑接入 | §3.5 LangGraph+Provider+Checkpointer、§3.3 MCP Server(handler)、§6.1 Chat 流、§8.1 investigations/records | ✅ 完成（代码+单测+真 LLM 集成全通过） |
 | M4 Webhook 全自动闭环 | §6.2 事件流、§6.3 状态机、§6.4 去重事务、§6.6 Token 四道闸、Telegram 推送 | ⏳ |
 | M5 知识库自进化 | §3.6 Chroma+混合检索、§5.5 query_runbook、§8.2 向量元数据、SOP 审核面板 | ⏳ |
 | 跨里程碑 | §5.7 错误码规约、§7.5 重试矩阵、§11 灾难恢复（建议 M3 起逐步落地） | ⏳ |
@@ -240,7 +240,6 @@ export AIOPS_TEST_LLM_KEY="$DEEPSEEK_API_KEY"
 
 ## 9. 立即可做的下一步
 
-1. **提交 M3**：`git add` 五源码(store/permission_gate/llm/mcp_server/agent)+六测试 + 设计🔧修订 + TRADEOFFS + 本 HANDOFF，提交 `feat(m3): Agent 大脑 - react agent + MCP handler + PermissionGate(C2) + Checkpointer`，推 GitHub（公开仓库，提交前脱敏复核）。
-2. **M4 启动**：读 §6.2/§6.3/§6.4/§6.6，进 EnterPlanMode 对齐 Webhook 事件流 + 去重事务 + Token 四道闸方案。可选先补 Recovery Sweep（§6.8，Checkpointer 已就绪）或 FastAPI `/chat`（§6.1）。
+1. **M4 启动**：读 §6.2/§6.3/§6.4/§6.6，进 EnterPlanMode 对齐 Webhook 事件流 + 去重事务 + Token 四道闸方案。可选先补 Recovery Sweep（§6.8，Checkpointer 已就绪）或 FastAPI `/chat`（§6.1）。
 
 > 本项目优先级：安全 > 可逆性 > 泛用性 > 性能 > 功能广度（见 TRADEOFFS §0）。M1 守住安全红线；M2 三层防线端到端贯通（真靶机验证）；M3 Agent 大脑闭环（interrupt-in-tool HITL + C2 一次性消费，FakeLLM 全图 + 真 deepseek-v4-pro 集成验证）。
