@@ -132,6 +132,33 @@
 - **理由:** 权限分级(L0-L3)+ 审计 + 协议标准化 + 可被其他 Agent/客户端复用。**Agent 不持有执行器 = 即便 Agent 被诱导也绕不过 PermissionGate**——L3 校验 `approval_id` 在 MCP 侧,不在 Agent 侧。这是"不依赖 Agent 自觉"的关键。
 - **何时翻案:** 几乎不翻。性能开销在 1-3 节点可忽略;可测试性靠 in-process mock 解决(§10.4)。
 
+### 1.14 M3: 工具为原生 StructuredTool 调共享 handler,而非经 MCP 传输 `[§3.3 M3]`
+
+- **选了:** M3 的 4 个运维工具是 `agent.py` 的原生 `@tool`(StructuredTool),调用 `mcp_server.py` 的共享 handler(`handle_discovery`/`handle_logs`/`handle_journal`/`handle_remediation`);MCP `@call_tool` 与原生工具共用同一 handler。Agent 运行时**不经 MCP 传输层**。
+- **备选:** ① L3 工具也经 `load_mcp_tools` 从 MCP Server 加载(设计原意图);② Agent 直连执行引擎,跳过 handler。
+- **代价:** "MCP 作为唯一运维出口"在 M3 运行时退化为"handler 作为唯一运维出口"--传输层未被 agent 路径使用。MCP stdio/in-process 传输仅由 `test_mcp_server.py` 验证契约,不进生产数据路径。
+- **真实原因(为何不是备选①):** `langchain-mcp-adapters` 加载的 MCP 工具**无法调用 LangGraph `interrupt()`**--`interrupt()` 须在图节点/工具任务上下文内,经 MCP 传输的工具执行在另一协程边界,挂不起图。这是 M3 接入时才暴露的硬约束,设计 §3.3 没预见。L3 必须能 interrupt,故 L3 不能是 MCP-loaded 工具;为保持 4 工具一致 + 复用 handler,L1/L2 也取原生。
+- **安全语义未变:** handler 是唯一出口(PermissionGate + 执行引擎 + 截断),MCP `@call_tool` 与原生工具都经它。审计/权限分级落在 handler,不在传输层。**Agent 仍不持有执行器**--它调的是 handler,handler 内部才碰 SSH/PermissionGate。
+- **何时翻案:** 若要 stdio 子进程隔离(生产级进程边界),handler 不变,仅把 4 工具改回 `load_mcp_tools` 加载--但 L3 的 interrupt 须另寻机制(如 Agent 侧 pre_model_hook 拦截 L3 tool_call 后 interrupt,而非工具内 interrupt)。即"翻案成本在 L3 interrupt 实现,不在 handler"。
+
+### 1.15 M3: approval_id 经 interrupt() 返回值透传,而非 InjectedState `[§3.3/§6.7 M3]`
+
+- **选了:** interrupt-in-tool 模式(方案 D)。L3 工具签名不含 `approval_id`(LLM 不可见),工具内 `interrupt(preview)` 挂起;resume 时 `interrupt()` 返回值即 `approval_id`。M3 实现。
+- **备选:** ① 方案 A `InjectedState("approval_id")`(设计原推荐,已源码核对可行);② 方案 B 自定义 ToolNode 手动注入;③ 方案 C MCP 侧从上下文读。
+- **代价:** "approval_id 经图 state 透传"的设计描述(§6.7)在实现上变为"经 interrupt 返回值透传"--与设计文档字面有出入(已加 🔧 修订注记)。reject 决策编码为 `{"rejected": True}` 而非写 state。
+- **理由:** 安全语义与方案 A **完全一致**--approval_id 不进 LLM 可见 `tool_call_schema`,LLM 无法伪造。但方案 D 更简: ① 消除 `InjectedState` 在 resume 重跑 ToolNode 任务时"是否重新注入"的不确定性(langgraph 1.2.7 行为需逐一验证);② `interrupt()` 返回值天然承载 approve/reject 二元决策,比"写 state + 读 state"少一跳状态;③ interrupt 值本身即审批弹窗 payload(`rendered_cmd`/`impact`),无需再从 state 取。
+- **何时翻案:** 若未来 LangGraph 的 `InjectedState` 在 resume 路径行为稳定且有官方文档背书,或需把 approval_id 与工具调用解耦(如一个 approval 覆盖多个 L3 调用),可回方案 A。**方案 A/D 安全等价,选 D 纯为实现简洁**。
+
+### 1.16 M3: 持久层取 Store Protocol + InMemory/SQLite,而非真 Firebase `[§8.1 M3]`
+
+- **选了:** `Store` Protocol + `InMemoryStore`(测试默认)+ `SqliteStore`(aiosqlite 真持久化)。真 FirebaseStore 延后。
+- **备选:** 按 §8.1/§10.4 用 firebase-admin + Firebase Emulator Suite(CI)。
+- **代价:** 工单/记录存本地 SQLite 而非 Firebase--失去实时同步(`onSnapshot`)与 Auth。设计 §3.2 Firebase 实时同步特性在 M3 不可用。
+- **理由:** ① 真 Firebase 需 GCP 项目 + Service Account + Emulator Suite,CI 重,与作品集"轻量可跑、clone 即测"调性冲突;② M3 核心是 Agent 大脑闘环,持久层是支撑,SQLite 足以验证崩溃不丢工单(`test_sqlite_persistence_across_reopen`);③ C2 一次性消费靠 SQL `WHERE status='APPROVED'` 原子完成,语义不弱于 Firestore 事务;④ **Protocol 已对齐 §8.1 字段**,未来 `FirebaseStore` 实现即插即用,Agent/PermissionGate/MCP 代码零改动。
+- **何时翻案:** 接前端(§3.1 React Dashboard,需 `onSnapshot` 实时刷新)时,补 `FirebaseStore` 后端--届时 Store Protocol 是现成的抽象边界,翻案成本=1 个后端类。
+
+
+
 ---
 
 ## 2. 最容易被挑战的 5 问(预载答辩)

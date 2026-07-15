@@ -311,6 +311,12 @@ flowchart TB
 > - **方案 B — 自定义 ToolNode：** resume 后拦截 L3 调用，手动把 state 里的 `approval_id` 注入 tool args 再执行。
 > - **方案 C — MCP Server 侧从上下文读取：** PermissionGate 不依赖工具参数，改为从调用上下文/图状态读取 `approval_id`（更贴近"防御性校验"定位，但 MCP Server 须能访问图状态）。
 >
+> 🔧 [M3 实施修订] **采用 interrupt-in-tool 模式（方案 D，新增）。** M3 落地时核对 langgraph 1.2.7 / langchain-core 1.4.8 源码确认 `InjectedState("approval_id")` 可行（`tool_call_schema` 隐藏 approval_id + ToolNode 剥离 LLM 伪造值，安全语义达预期），但实现上**改用更简单的 interrupt-in-tool**：L3 工具签名不含 `approval_id`（LLM 不可见、无法伪造），工具内调 `interrupt(preview)` 挂起图，resume 时 `interrupt()` 返回值即 `approval_id`（approve）或 `{"rejected": True}`（reject）。三点考量：① 安全语义与方案 A 一致（approval_id 不进 LLM 可见 schema）；② 消除 `InjectedState` 在 resume 重跑 ToolNode 任务时重新注入的不确定性；③ `interrupt()` 返回值天然承载 approve/reject 二元决策，比"写 state + 读 state"少一跳。**方案 A/C 仍为可行备选**（设计未否定），仅 M3 实现取更简路径。详见 `src/aiops_bastion/agent.py` + `mcp_server.py`。
+>
+> 🔧 [M3 实施修订] **L3 工具为原生 StructuredTool，非经 MCP 运行时传输。** 原因：`langchain-mcp-adapters` 加载的 MCP 工具无法调用 LangGraph `interrupt()`（interrupt 须在图节点/工具任务上下文内）。故 `agent.py` 的 4 工具均为原生 `@tool`，调用 `mcp_server` 的共享 handler（`handle_discovery`/`handle_logs`/`handle_journal`/`handle_remediation`，与 MCP `@call_tool` 共用，transport-agnostic）。**handler 是唯一运维出口**（PermissionGate + 执行引擎），MCP `@call_tool` 与原生工具都经它，传输层差异不影响安全语义。MCP 传输层（in-process contract）由 `test_mcp_server.py` 独立验证，agent 路径由 `test_agent.py` 验证。单进程作品集取此模式；未来若需 stdio 子进程隔离，handler 不变，仅传输层切换。详见 TRADEOFFS。
+>
+> 🔧 [M3 实施修订] **M3 取 in-process 常驻（非 stdio 子进程）。** 单进程作品集，in-process 经 `mcp.shared.memory.create_connected_server_and_client_session` 已满足（spike-02 验证）；stdio 子进程（设计原"生产"路径）延后，TRADEOFFS 记 tradeoff。因 M3 工具为原生 StructuredTool（见上修订），MCP Server 的 in-process 传输仅用于 `test_mcp_server.py` 验证 4 工具契约，agent 运行时不经 MCP 传输层。
+>
 > **MCP ClientSession 生命周期约束 `[spike-02 修订]`：** `langchain-mcp-adapters` 的 `load_mcp_tools(session)` 返回的 `BaseTool` **生命周期绑定 session**——离开 `async with create_connected_server_and_client_session(...)` 上下文后 session 关闭，工具失效。故 **MCP ClientSession 须与 Agent 同生命周期**（整个调查期间常驻），不能每次工具调用新建/销毁 session。实施时 MCP Client 作为 Agent 的长生命周期依赖注入（生产实现用 stdio 子进程常驻；CI 测试用 in-process 常驻 session，见 §10.4）。
 >
 > **MCP 返回结构分层 `[spike-02 修订]`：** MCP 工具经 `langchain-mcp-adapters` 包装后，`ainvoke` 返回 **content block 列表** `[TextContent(text=...)]`，**非纯字符串**。本设计 §5 所述"统一返回 `{ok, data}` JSON"是该 content block 的 **text 字段内层 JSON**，外层还包一层 MCP content block。Agent 读取工具结果时须经 `_extract_text(result)` 提取首个 text block 的 `text` 字段，再 `json.loads` 解析内层契约。
@@ -1101,6 +1107,8 @@ flowchart TB
 - 仅 L3 触发 HITL；L1/L2 只读自主执行，但全部记审计日志。
 
 > 🔧 [spike-04 修订] 修改说明：**`approval_id` 透传机制明确。** spike 04 暴露 `create_react_agent` 默认机制下 resume 注入的 `approval_id` **不会自动透传到 `execute_remediation` 工具参数**。v1.2 原文"resume 时由 Agent 注入"过于笼统，此处明确：**`approval_id` 在 interrupt 时写入 LangGraph 图 state，resume 后由 ToolNode（经 `InjectedToolArg`）或自定义 ToolNode 从 state 读取并注入工具调用**，Agent 调用 `execute_remediation` 时无需在 `args` 里传 `approval_id`。MCP Server 侧 PermissionGate 亦从 state（或调用上下文）读取 `approval_id` 做防御性校验，不依赖工具参数。实现方案三选一见 §3.3 修订（推荐方案 A `InjectedToolArg`）。
+>
+> 🔧 [M3 实施修订] **§6.7 HITL 流程已落地为 interrupt-in-tool 模式**（见 §3.3 方案 D 修订）：interrupt 由 L3 工具内部触发（非 `interrupt_before=["tools"]` 全工具中断，spike-04 教训），approval_id 经 `interrupt()` 返回值透传（非写图 state 后 InjectedState 读取），resume 用 `Command(resume=approval_id)`（approve）或 `Command(resume={"rejected": True})`（reject）。Checkpointer 经 `AsyncSqliteSaver` 持久化（spike-04 坑：异步路径不可用同步 SqliteSaver）。全部经 `test_agent.py` FakeLLM 全图验证：L3 interrupt -> approve -> resume -> 消费 -> 执行恰好 1 次（不重放）；reject -> ABORTED + L3 未执行。
 
 > 🔧 [P1-4] 修改说明：**单用户 HITL 定位声明。** `[决策#12]` 锁定单用户模型，触发者与审批者为同一账号，HITL 不构成“权限隔离”，而定位为“**防误触确认**”：要求人类在执行前显式审阅渲染命令与影响并二次确认，防 Agent 误判导致误修复。此为既定安全权衡，已在 §9.2 记录。
 >
@@ -1228,6 +1236,8 @@ networks:
 ### 8.1 Firebase Schema
 
 > 🔧 [评审补充#R18] 修改说明：状态枚举与 §6.3 状态机逐项核对一致；新增 `hitl_requests.approval_id`、`consumed_at` 字段支撑一次性消费；新增 `investigations.checkpoint_id` 支撑崩溃恢复。
+>
+> 🔧 [M3 实施修订] **持久层取 Store Protocol + InMemory/SQLite 后端（真 Firebase 延后）。** M3 落地 `Store` Protocol（investigations/records/hitl_requests CRUD，字段对齐本表）+ `InMemoryStore`（dict + 锁，测试默认）+ `SqliteStore`（aiosqlite 单文件，真持久化，consume_hitl 经 SQL `WHERE status='APPROVED'` 原子完成 C2）。真 Firebase 后端（firebase-admin）延后——需 GCP 项目 + Emulator，CI 重，与作品集"轻量可跑"调性冲突；Protocol 已对齐本表字段，未来 `FirebaseStore` 实现即插即用。C2 一次性消费经 `PermissionGate.validate_and_consume`（§3.3）+ `Store.consume_hitl` 原子双保险。
 
 **Collection `nodes`**（主机元数据）
 
@@ -1401,7 +1411,7 @@ networks:
 | :--- | :--- |
 | M1 基建与控制台 | §2.4 信任边界、§3.1 前端 Onboarding/Dashboard、§3.7 Vault、§7.4 Docker Compose + cloudflared |
 | M2 探测网关与工具链 | §3.4 执行引擎、§5.2/5.3 工具、§4.2 白名单+正则+远端硬化、§5 日志截断 |
-| M3 Agent 大脑接入 | §3.5 LangGraph + Provider + Checkpointer、§3.3 MCP Server、§6.1 Chat 流、§8.1 investigations/records |
+| M3 Agent 大脑接入 | §3.5 LangGraph + Provider + Checkpointer、§3.3 MCP Server、§6.1 Chat 流、§8.1 investigations/records |（M3 仅核心闭环：Agent+MCP handler+PermissionGate(C2)+Checkpointer；FastAPI/SSE/Webhook/Recovery Sweep/真 Firebase/RAG 延后 M4+）
 | M4 Webhook 全自动闭环 | §6.2 事件流、§6.3 状态机、§6.4 去重事务、§6.6 Token 四道闸、Telegram 推送 |
 | M5 知识库自进化 | §3.6 Chroma + 混合检索、§5.5 query_runbook、§8.2 向量元数据、SOP 审核面板 |
 | 跨里程碑 | §5.7 错误码规约、§7.5 重试矩阵、§11 灾难恢复（建议 M3 起逐步落地） |

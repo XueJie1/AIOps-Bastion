@@ -1,13 +1,14 @@
 # AIOps-Bastion 任务交接文档
 
 > 给开新 session 用。自包含，读完即可进入状态。
-> 最后更新: 2026-07-11 | 对应提交 `af10ff2` | 本地与 GitHub 同步
+> 最后更新: 2026-07-15 | 对应提交 (M3 待提交) | 本地领先 GitHub
 
 ---
 
 ## 0. 一句话现状
 
-**M2 探测网关全部完成（代码+单测+真靶机集成全通过，91 测试全绿），已推 GitHub。下一步 M3。**
+**M3 Agent 大脑接入完成（代码+单测+真 LLM 集成全通过，148 测试全绿，待提交）。下一步 M4。**
+M3 落地 LangGraph react agent + MCP Server handler + PermissionGate(C2 一次性消费) + AsyncSqliteSaver Checkpointer + Store Protocol(InMemory/SQLite) + FakeLLM/真 deepseek-v4-pro。两个 spike 暴露点已据源码核对落地：interrupt-in-tool 模式(approval_id 经 interrupt() 返回值透传)、in-process MCP(原生 StructuredTool 调共享 handler)。
 M2 把 M1 同步执行桩升级为真 asyncssh 执行引擎 + §5.2/§5.3 工具 + rbash 第三道防线端到端验证路径。
 源码核对发现并修正了设计 §3.4 [P2-7] 的一处事实错误（asyncssh 不引用）。
 
@@ -70,6 +71,7 @@ M2 把 M1 同步执行桩升级为真 asyncssh 执行引擎 + §5.2/§5.3 工具
 
 ### Git 历史（最新在上）
 ```
+(M3 待提交) feat(m3): Agent 大脑 - react agent + MCP handler + PermissionGate(C2) + Checkpointer
 af10ff2 feat(m2): 探测网关 - 真 asyncssh 执行引擎 + 工具链 + rbash 三层防线
 88a9024 docs: 任务交接文档 HANDOFF.md
 5e5c0f3 docs: §8.3 同步 spike-03 - deepseek-v4-pro / active=deepseek
@@ -81,6 +83,7 @@ e538544 docs: 设计文档 v1.3 - 据 spike 验证落地 7 项修订
 0409564 chore: 项目基线 - 设计文档 + 取舍说明 + spike 验证
 ```
 > **M2 已提交并推 GitHub**（commit `af10ff2`，公开仓库；HANDOFF 真实靶机信息已脱敏）。
+> **M3 代码+单测+真 LLM 集成全过，待提交**（设计 🔧 修订 + TRADEOFFS 已同步；真实信息脱敏基线维持）。
 
 ### M1 安全地基（已完成，已审查修复）
 源码三件 + 测试三件，34 测试全过、ruff 干净：
@@ -122,6 +125,33 @@ e538544 docs: 设计文档 v1.3 - 据 spike 验证落地 7 项修订
 
 > ⚠️ **rbash 配置坑（M2 实战修正）：** 初版 REMOTE_HARDENING.md §3 写 `command="/bin/rbash"` 是**错的**——sshd 执行 `rbash -c "/bin/rbash"`，rbash 拒绝运行含 `/` 的命令名（拒绝自己），导致**所有命令跑不通**。正解：authorized_keys 只留 `restrict`，受限靠账户登录 shell = `/bin/rbash`（`useradd -s /bin/rbash`）。文档已修正 + 加 §3b wrapper 备选。实测这台 Debian bash 的 `rbash -c` 模式受限严格（cd/重定向均拒）。
 
+
+### M3 Agent 大脑接入（已完成，待提交）
+LangGraph react agent + MCP Server handler + PermissionGate(C2) + Checkpointer + Store Protocol。**148 测试全过（M2 的 91 + M3 新增 57）、ruff 干净、src mypy 3 E 类基线无新增**：
+
+| 文件 | 职责 |
+| :--- | :--- |
+| `src/aiops_bastion/store.py` | Store Protocol + Investigation/Record/HitlRequest dataclass(§8.1) + InMemoryStore + SqliteStore(aiosqlite, consume_hitl 原子 SQL) |
+| `src/aiops_bastion/permission_gate.py` | PermissionGate: validate_and_consume 校验(存在/状态==APPROVED/未过期/归属匹配) + 原子消费(C2) |
+| `src/aiops_bastion/llm.py` | build_llm(§3.5 openai/anthropic, Vault 取 key) + FakeLLM(脚本式 BaseChatModel, bind_tools no-op) |
+| `src/aiops_bastion/mcp_server.py` | in-process Server + 4 handler(transport-agnostic) + build_server + extract_text(spike-02 分层) |
+| `src/aiops_bastion/agent.py` | build_agent(create_react_agent + AsyncSqliteSaver) + 4 原生 @tool + L3 interrupt-in-tool + SRE prompt |
+| `tests/test_store.py` | InMemory+Sqlite 契约(20): CRUD + C2 一次性消费 + Sqlite 跨实例持久化 |
+| `tests/test_permission_gate.py` | C2 四断言(14, 标 injection): 二次消费/过期/未审批/归属不符 |
+| `tests/test_llm.py` | build_llm 构造 + FakeLLM 脚本推进(10) |
+| `tests/test_mcp_server.py` | in-process 4 工具契约(10): {ok,data} + L3 缺 approval_id 拒 + C2 复用拒 |
+| `tests/test_agent.py` | FakeLLM 全图(7, 标 crash): L1->L2->L3 interrupt->resume->消费->执行1次(不重放) + reject->ABORTED + 元字符拒 |
+| `tests/test_integration_agent.py` | env-gated 真 deepseek-v4-pro(2, 标 integration): L1 选工具 + L3 interrupt/resume 真模型驱动 |
+
+**M3 已验证（FakeLLM 单测层）：** L3-only interrupt(非全工具)、approval_id 经 interrupt() 返回值透传(LLM 不可见)、resume(approval_id)->消费->执行恰好1次(不重放)、reject(resume={"rejected":True})->ABORTED+L3未执行、approval_id 复用->HITL_REJECTED(C2)、元字符 unit->render 拒、L1/L2 自主不 interrupt、submit_journal 写 Store、工具结果 JSON 可解析。
+**M3 已验证（真 LLM 集成 / deepseek-v4-pro / 2026-07-15 通过）：** 真 LLM 选 execute_discovery(L1) + 解析工具结果；强 prompt 下走到 L3 interrupt -> approve -> resume -> 执行1次 + approval_id CONSUMED。2 集成测试全过。
+
+> ⚠️ **approval_id 注入机制（M3 实施修订，spike-04 暴露点#2）：** 设计 §3.3 原推荐方案 A `InjectedState("approval_id")`（已源码核对可行：tool_call_schema 隐藏 + ToolNode 剥离 LLM 伪造值）。但 M3 **改用方案 D interrupt-in-tool**（更简，安全语义等价）：L3 工具签名不含 approval_id，工具内 `interrupt(preview)` 挂起，resume 时 `interrupt()` 返回值即 approval_id。消除 InjectedState 在 resume 重跑 ToolNode 时的重注入不确定性。设计 §3.3/§6.7 已加 🔧 修订注记，TRADEOFFS §1.15 记取舍。
+>
+> ⚠️ **MCP 传输（M3 实施修订，spike-02 暴露点#1）：** M3 工具为原生 StructuredTool（非经 MCP 运行时传输）--原因：MCP-loaded 工具无法调 LangGraph `interrupt()`。4 工具调 `mcp_server` 共享 handler（唯一运维出口，PermissionGate+执行引擎），MCP in-process 传输仅由 `test_mcp_server.py` 验证契约。stdio 子进程延后。设计 §3.3 已加 🔧 修订注记，TRADEOFFS §1.14 记取舍。
+>
+> ⚠️ **持久层（M3 实施修订）：** 取 Store Protocol + InMemory/SQLite（真 Firebase 延后，需 GCP+Emulator，CI 重）。Protocol 已对齐 §8.1 字段，未来 FirebaseStore 即插即用。TRADEOFFS §1.16 记取舍。
+
 ### Spike 验证（已完成，4 个脚本）
 3 PASS + 1 PARTIAL FAIL（根因已定位）：
 - 01 LangGraph interrupt + SqliteSaver 崩溃恢复 - PASS
@@ -158,7 +188,7 @@ e538544 docs: 设计文档 v1.3 - 据 spike 验证落地 7 项修订
 | :--- | :--- | :--- |
 | M1 基建与控制台 | §3.7 Vault + §3.4 白名单/模板 + §4.3 注入测试（§3.1 前端、§7.4 Docker 后续） | ✅ 核心完成；前端 Onboarding/Dashboard 未做 |
 | M2 探测网关与工具链 | §3.4 真 asyncssh 连接池+Semaphore(4)+超时熔断、§5.2/5.3 工具、§4.2 白名单+正则+远端硬化、§5 日志截断 | ✅ 完成（代码+单测+真靶机集成全通过） |
-| M3 Agent 大脑接入 | §3.5 LangGraph+Provider+Checkpointer、§3.3 MCP Server、§6.1 Chat 流、§8.1 investigations/records | ⏳ 下一步 |
+| M3 Agent 大脑接入 | §3.5 LangGraph+Provider+Checkpointer、§3.3 MCP Server(handler)、§6.1 Chat 流、§8.1 investigations/records | ✅ 完成（代码+单测+真 LLM 集成全通过，待提交） |
 | M4 Webhook 全自动闭环 | §6.2 事件流、§6.3 状态机、§6.4 去重事务、§6.6 Token 四道闸、Telegram 推送 | ⏳ |
 | M5 知识库自进化 | §3.6 Chroma+混合检索、§5.5 query_runbook、§8.2 向量元数据、SOP 审核面板 | ⏳ |
 | 跨里程碑 | §5.7 错误码规约、§7.5 重试矩阵、§11 灾难恢复（建议 M3 起逐步落地） | ⏳ |
@@ -168,8 +198,8 @@ e538544 docs: 设计文档 v1.3 - 据 spike 验证落地 7 项修订
 | :--- | :--- | :--- | :--- |
 | B | `ExecutionEngine` 接口签名偏差（同步返回 list[str]、无 wait_slot/Semaphore/连接池） | M2 | ✅ M2 消化（AsyncSSHExecutor: async->ExecResult + wait_slot + Semaphore + pool） |
 | C1 | asyncssh `shlex.quote` 行为验证（§4.3 验收项） | M2 | ✅ M2 消化（修正为 shlex.join；单元 + 真靶机集成路径就绪） |
-| C2 | `approval_id` 一次性消费/复用被拒（§4.3 验收项） | M3 PermissionGate | ⏳ M3 |
-| E | mypy 3 个 `no-any-return`（TEMPLATES 值 Any、`json.loads` Any、`bundle[name]` Any） | 后续清类型化 | ⏳ 仍 3 个（M2 无新增） |
+| C2 | `approval_id` 一次性消费/复用被拒（§4.3 验收项） | M3 PermissionGate | ✅ M3 消化（PermissionGate.validate_and_consume + Store.consume_hitl 原子双保险；4 断言过） |
+| E | mypy 3 个 `no-any-return`（TEMPLATES 值 Any、`json.loads` Any、`bundle[name]` Any） | 后续清类型化 | ⏳ 仍 3 个（M3 无新增） |
 
 ### M2 范围外（明确延后）
 - §3.3 MCP Server / stdio 包装 / `@server.call_tool` 注册 -> **M3**（§10.1 映射）。M2 交付可直测的 async 工具函数。
@@ -183,22 +213,19 @@ M1 未实现 BIP-39 助记词。vault.enc 已留 16B recovery_salt 占位 + 空 
 
 ---
 
-## 7. M3 行动前对齐
+## 7. M3 已完成 / 真 LLM 集成复现
 
-**M2 真靶机集成测试已通过（2026-07-11）：** 靶机为一台 systemd 主机（账户登录 shell `/bin/rbash`）、探测目标 systemd `ssh` 服务。复现命令（env 只传私钥路径，不传内容；真实 host/账户/私钥路径本地私存，勿入公开仓库）：
+**M3 真 LLM 集成测试已通过（2026-07-15）：** 真 `deepseek-v4-pro` 驱动 react agent 全图（对 FakeSSHExecutor）。复现命令（env 门控，无 env 自动 skip；API key 仅本地 `.env`/spike/.env，不入 git/日志/LLM）：
 ```bash
-export AIOPS_TEST_SSH_HOST=<your-target-host>
-export AIOPS_TEST_SSH_KEY=<path-to-bastion-private-key>   # 私钥仅本地
-export AIOPS_TEST_SSH_USER=<bastion-user>
-export AIOPS_TEST_SSH_SERVICE=ssh
-export AIOPS_TEST_SSH_FORM=systemd
-.venv/bin/python -m pytest tests/test_integration_ssh.py -v
+set -a; . spike/.env; set +a   # 或自建 .env 含 DEEPSEEK_API_KEY
+export AIOPS_TEST_LLM_PROVIDER=deepseek
+export AIOPS_TEST_LLM_MODEL=deepseek-v4-pro
+export AIOPS_TEST_LLM_KEY="$DEEPSEEK_API_KEY"
+.venv/bin/python -m pytest tests/test_integration_agent.py -v   # 2 测试, ~60s
 ```
-私钥（Bastion 专用 ed25519）仅在本地开发机，低权限（靶机 rbash 限制），不入 git/日志/LLM。
+真靶机 SSH 集成（M2 落地，env `AIOPS_TEST_SSH_HOST`/`AIOPS_TEST_SSH_KEY` 等）复现命令见 §4 M2 小节。
 
-**M3 范围（下一步）：** §3.3 MCP Server（包 M2 工具为 `@server.call_tool`）+ §3.5 LangGraph Agent + §6.1 Chat 流 + PermissionGate（C2，approval_id 一次性消费）。开工前用 EnterPlanMode 对齐 MCP ClientSession 生命周期（spike-02 修订：须与 Agent 同生命周期常驻）与 approval_id 注入机制（spike-04：InjectedToolArg）。
-
----
+**M4 范围（下一步）：** §6.2 事件流（Webhook）+ §6.3 状态机驱动 + §6.4 去重事务（Firestore 事务语义，M3 用 SQLite 单机简化）+ §6.6 Token 四道闸（含 reasoning tokens 累计，§3.5 spike-03）+ Telegram 推送。可选同步落地：§6.8 Recovery Sweep + HITL 超时清扫器（§11 崩溃恢复，Checkpointer 已在 M3 就绪）、FastAPI `/chat` + SSE（§6.1 web 层）、真 FirebaseStore 后端（Store Protocol 已就绪）。
 
 ## 8. 开发约定
 
@@ -213,6 +240,7 @@ export AIOPS_TEST_SSH_FORM=systemd
 
 ## 9. 立即可做的下一步
 
-1. **M3 启动**：读 §3.3/§3.5/§6.1，进 EnterPlanMode 对齐 MCP Server 包装 + Agent 接入方案。重点对齐两个 spike 已暴露点：MCP ClientSession 生命周期（须与 Agent 同生命周期常驻，spike-02）、approval_id 注入机制（InjectedToolArg，spike-04）。
+1. **提交 M3**：`git add` 五源码(store/permission_gate/llm/mcp_server/agent)+六测试 + 设计🔧修订 + TRADEOFFS + 本 HANDOFF，提交 `feat(m3): Agent 大脑 - react agent + MCP handler + PermissionGate(C2) + Checkpointer`，推 GitHub（公开仓库，提交前脱敏复核）。
+2. **M4 启动**：读 §6.2/§6.3/§6.4/§6.6，进 EnterPlanMode 对齐 Webhook 事件流 + 去重事务 + Token 四道闸方案。可选先补 Recovery Sweep（§6.8，Checkpointer 已就绪）或 FastAPI `/chat`（§6.1）。
 
-> 本项目优先级：安全 > 可逆性 > 泛用性 > 性能 > 功能广度（见 TRADEOFFS §0）。M1 守住安全红线；M2 三层防线端到端贯通（含源码核对修正 asyncssh 行为误述，真靶机验证通过）。
+> 本项目优先级：安全 > 可逆性 > 泛用性 > 性能 > 功能广度（见 TRADEOFFS §0）。M1 守住安全红线；M2 三层防线端到端贯通（真靶机验证）；M3 Agent 大脑闭环（interrupt-in-tool HITL + C2 一次性消费，FakeLLM 全图 + 真 deepseek-v4-pro 集成验证）。
